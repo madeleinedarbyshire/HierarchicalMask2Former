@@ -17,10 +17,15 @@ from .data.dataset_mappers.mask_former_panoptic_dataset_mapper import (
 from .data.dataset_mappers.mask_former_semantic_dataset_mapper import (
     MaskFormerSemanticDatasetMapper,
 )
+from .data.dataset_mappers.phenobench_dataset_mapper import (
+    PhenoBenchDatasetMapper,
+)
 
 # models
-from .maskformer_model import MaskFormer
+# from .maskformer_model import MaskFormer
+from .hierarchical_mask2former_model import MaskFormer
 from .test_time_augmentation import SemanticSegmentorWithTTA
 
 # evaluation
 from .evaluation.instance_evaluation import InstanceSegEvaluator
+from .evaluation.phenobench_evaluation import PhenoBenchEvaluator

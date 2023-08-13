@@ -1,0 +1,25 @@
+_BASE_: mask2former_R50_bs2_100ep.yaml
+MODEL:
+  BACKBONE:
+    NAME: "D2SwinTransformer"
+  SWIN:
+    EMBED_DIM: 192
+    DEPTHS: [2, 2, 18, 2]
+    NUM_HEADS: [6, 12, 24, 48]
+    WINDOW_SIZE: 12
+    APE: False
+    DROP_PATH_RATE: 0.3
+    PATCH_NORM: True
+    PRETRAIN_IMG_SIZE: 384
+  WEIGHTS: "models/edited_swin_lin21k.pkl"
+  PIXEL_MEAN: [124.578, 97.773, 65.357]
+  PIXEL_STD: [58.341, 48.268, 37.847]
+  MASK_FORMER:
+    NUM_OBJECT_QUERIES: 200
+    SKIPS: [2,5]
+SOLVER:
+  IMS_PER_BATCH: 2
+  BASE_LR: 0.00001
+  STEPS: (58781, 68228)
+  MAX_ITER: 70350
+OUTPUT_DIR: output/swin_lin21k_freeze_bb_4_lr_00001_100_dist_aug

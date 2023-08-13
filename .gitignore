@@ -1,5 +1,6 @@
 # output dir
 output
+output_coco
 instant_test_output
 inference_test_output
 
@@ -46,8 +47,7 @@ _darcs
 
 # project dirs
 /detectron2/model_zoo/configs
-/datasets/*
-!/datasets/*.*
 /projects/*/datasets
 /models
 /snippet
+/results

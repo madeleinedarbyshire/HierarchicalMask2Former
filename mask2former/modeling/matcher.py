@@ -93,26 +93,26 @@ class HungarianMatcher(nn.Module):
         self.num_points = num_points
 
     @torch.no_grad()
-    def memory_efficient_forward(self, outputs, targets):
+    def memory_efficient_forward(self, outputs, targets, level):
         """More memory-friendly matching"""
-        bs, num_queries = outputs["pred_logits"].shape[:2]
+        bs, num_queries = outputs[f"{level}_pred_logits"].shape[:2]
 
         indices = []
 
         # Iterate through batch size
         for b in range(bs):
 
-            out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
-            tgt_ids = targets[b]["labels"]
+            out_prob = outputs[f"{level}_pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
+            tgt_ids = targets[b][f"{level}_labels"]
 
             # Compute the classification cost. Contrary to the loss, we don't use the NLL,
             # but approximate it in 1 - proba[target class].
             # The 1 is a constant that doesn't change the matching, it can be ommitted.
             cost_class = -out_prob[:, tgt_ids]
 
-            out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]
+            out_mask = outputs[f"{level}_pred_masks"][b]  # [num_queries, H_pred, W_pred]
             # gt masks are already padded when preparing target
-            tgt_mask = targets[b]["masks"].to(out_mask)
+            tgt_mask = targets[b][f"{level}_masks"].to(out_mask)
 
             out_mask = out_mask[:, None]
             tgt_mask = tgt_mask[:, None]
@@ -145,7 +145,7 @@ class HungarianMatcher(nn.Module):
                 self.cost_mask * cost_mask
                 + self.cost_class * cost_class
                 + self.cost_dice * cost_dice
-            )
+            )             
             C = C.reshape(num_queries, -1).cpu()
 
             indices.append(linear_sum_assignment(C))
@@ -156,7 +156,7 @@ class HungarianMatcher(nn.Module):
         ]
 
     @torch.no_grad()
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, level):
         """Performs the matching
 
         Params:
@@ -176,7 +176,7 @@ class HungarianMatcher(nn.Module):
             For each batch element, it holds:
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
-        return self.memory_efficient_forward(outputs, targets)
+        return self.memory_efficient_forward(outputs, targets, level)
 
     def __repr__(self, _repr_indent=4):
         head = "Matcher " + self.__class__.__name__

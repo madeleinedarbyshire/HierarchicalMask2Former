@@ -16,6 +16,8 @@ import copy
 import itertools
 import logging
 import os
+import tempfile
+import time
 
 from collections import OrderedDict
 from typing import Any, Dict, List, Set
@@ -23,154 +25,94 @@ from typing import Any, Dict, List, Set
 import torch
 
 import detectron2.utils.comm as comm
+
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
-from detectron2.data import MetadataCatalog, build_detection_train_loader
+from detectron2.data import MetadataCatalog, DatasetCatalog, build_detection_train_loader, build_detection_test_loader
 from detectron2.engine import (
     DefaultTrainer,
     default_argument_parser,
     default_setup,
     launch,
 )
-from detectron2.evaluation import (
-    CityscapesInstanceEvaluator,
-    CityscapesSemSegEvaluator,
-    COCOEvaluator,
-    COCOPanopticEvaluator,
-    DatasetEvaluators,
-    LVISEvaluator,
-    SemSegEvaluator,
-    verify_results,
-)
+from detectron2.evaluation import verify_results
+from detectron2.modeling import build_model
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
+from detectron2.data.common import ToIterableDataset, MapDataset
+from detectron2.data.samplers import TrainingSampler
 from detectron2.solver.build import maybe_add_gradient_clipping
 from detectron2.utils.logger import setup_logger
 
 # MaskFormer
 from mask2former import (
-    COCOInstanceNewBaselineDatasetMapper,
-    COCOPanopticNewBaselineDatasetMapper,
-    InstanceSegEvaluator,
-    MaskFormerInstanceDatasetMapper,
-    MaskFormerPanopticDatasetMapper,
-    MaskFormerSemanticDatasetMapper,
-    SemanticSegmentorWithTTA,
+    PhenoBenchDatasetMapper,
+    PhenoBenchEvaluator,
     add_maskformer2_config,
 )
 
+from detectron2.data.datasets import register_coco_instances
+from register_phenobench import register_phenobench
+
+# TEST = False
+
+meta = {"thing_dataset_id_to_contiguous_id": {1:1, 2:2},
+        "stuff_dataset_id_to_contiguous_id": {0:0},
+        "thing_classes": ['crop', 'weed'],
+        "thing_colors": [(66, 135, 245), (245, 66, 66)], 
+        "stuff_classes": ['soil']}
+
+register_phenobench("phenobench_train", meta, "/workspace/PhenoBench", split="train")
+register_phenobench("phenobench_val", meta, "/workspace/PhenoBench", split="val")
+register_phenobench("phenobench_test", meta, "/workspace/PhenoBench", split="test")
 
 class Trainer(DefaultTrainer):
     """
     Extension of the Trainer class adapted to MaskFormer.
     """
-
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         """
-        Create evaluator(s) for a given dataset.
-        This uses the special metadata "evaluator_type" associated with each
-        builtin dataset. For your own dataset, you can simply create an
-        evaluator manually in your script and do not have to worry about the
-        hacky if-else logic here.
+        Returns:
+            PhenoBenchEvaluator
         """
-        if output_folder is None:
-            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-        evaluator_list = []
-        evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
-        # semantic segmentation
-        if evaluator_type in ["sem_seg", "ade20k_panoptic_seg"]:
-            evaluator_list.append(
-                SemSegEvaluator(
-                    dataset_name,
-                    distributed=True,
-                    output_dir=output_folder,
-                )
-            )
-        # instance segmentation
-        if evaluator_type == "coco":
-            evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
-        # panoptic segmentation
-        if evaluator_type in [
-            "coco_panoptic_seg",
-            "ade20k_panoptic_seg",
-            "cityscapes_panoptic_seg",
-            "mapillary_vistas_panoptic_seg",
-        ]:
-            if cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON:
-                evaluator_list.append(COCOPanopticEvaluator(dataset_name, output_folder))
-        # COCO
-        if evaluator_type == "coco_panoptic_seg" and cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON:
-            evaluator_list.append(COCOEvaluator(dataset_name, output_dir=output_folder))
-        if evaluator_type == "coco_panoptic_seg" and cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON:
-            evaluator_list.append(SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder))
-        # Mapillary Vistas
-        if evaluator_type == "mapillary_vistas_panoptic_seg" and cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON:
-            evaluator_list.append(InstanceSegEvaluator(dataset_name, output_dir=output_folder))
-        if evaluator_type == "mapillary_vistas_panoptic_seg" and cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON:
-            evaluator_list.append(SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder))
-        # Cityscapes
-        if evaluator_type == "cityscapes_instance":
-            assert (
-                torch.cuda.device_count() > comm.get_rank()
-            ), "CityscapesEvaluator currently do not work with multiple machines."
-            return CityscapesInstanceEvaluator(dataset_name)
-        if evaluator_type == "cityscapes_sem_seg":
-            assert (
-                torch.cuda.device_count() > comm.get_rank()
-            ), "CityscapesEvaluator currently do not work with multiple machines."
-            return CityscapesSemSegEvaluator(dataset_name)
-        if evaluator_type == "cityscapes_panoptic_seg":
-            if cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON:
-                assert (
-                    torch.cuda.device_count() > comm.get_rank()
-                ), "CityscapesEvaluator currently do not work with multiple machines."
-                evaluator_list.append(CityscapesSemSegEvaluator(dataset_name))
-            if cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON:
-                assert (
-                    torch.cuda.device_count() > comm.get_rank()
-                ), "CityscapesEvaluator currently do not work with multiple machines."
-                evaluator_list.append(CityscapesInstanceEvaluator(dataset_name))
-        # ADE20K
-        if evaluator_type == "ade20k_panoptic_seg" and cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON:
-            evaluator_list.append(InstanceSegEvaluator(dataset_name, output_dir=output_folder))
-        # LVIS
-        if evaluator_type == "lvis":
-            return LVISEvaluator(dataset_name, output_dir=output_folder)
-        if len(evaluator_list) == 0:
-            raise NotImplementedError(
-                "no Evaluator for the dataset {} with the type {}".format(
-                    dataset_name, evaluator_type
-                )
-            )
-        elif len(evaluator_list) == 1:
-            return evaluator_list[0]
-        return DatasetEvaluators(evaluator_list)
+        prediction_dir = tempfile.TemporaryDirectory()
+        return PhenoBenchEvaluator(dataset_name, prediction_dir, test=cfg.TEST.NO_EVAL)
+
+    @classmethod
+    def build_model(cls, cfg):
+        """
+        Returns:
+            torch.nn.Module:
+
+        It now calls :func:`detectron2.modeling.build_model`.
+        Overwrite it if you'd like a different model.
+        """
+        model = build_model(cfg)
+        logger = logging.getLogger(__name__)
+        logger.info("Model:\n{}".format(model))
+        return model
 
     @classmethod
     def build_train_loader(cls, cfg):
-        # Semantic segmentation dataset mapper
-        if cfg.INPUT.DATASET_MAPPER_NAME == "mask_former_semantic":
-            mapper = MaskFormerSemanticDatasetMapper(cfg, True)
-            return build_detection_train_loader(cfg, mapper=mapper)
-        # Panoptic segmentation dataset mapper
-        elif cfg.INPUT.DATASET_MAPPER_NAME == "mask_former_panoptic":
-            mapper = MaskFormerPanopticDatasetMapper(cfg, True)
-            return build_detection_train_loader(cfg, mapper=mapper)
-        # Instance segmentation dataset mapper
-        elif cfg.INPUT.DATASET_MAPPER_NAME == "mask_former_instance":
-            mapper = MaskFormerInstanceDatasetMapper(cfg, True)
-            return build_detection_train_loader(cfg, mapper=mapper)
-        # coco instance segmentation lsj new baseline
-        elif cfg.INPUT.DATASET_MAPPER_NAME == "coco_instance_lsj":
-            mapper = COCOInstanceNewBaselineDatasetMapper(cfg, True)
-            return build_detection_train_loader(cfg, mapper=mapper)
-        # coco panoptic segmentation lsj new baseline
-        elif cfg.INPUT.DATASET_MAPPER_NAME == "coco_panoptic_lsj":
-            mapper = COCOPanopticNewBaselineDatasetMapper(cfg, True)
-            return build_detection_train_loader(cfg, mapper=mapper)
+        mapper = PhenoBenchDatasetMapper(cfg, True)
+        dataset = DatasetCatalog.get(cfg.DATASETS.TRAIN[0])
+        return build_detection_train_loader(cfg, dataset=dataset, mapper=mapper, aspect_ratio_grouping=False)
+
+    @classmethod
+    def build_test_loader(cls, cfg, dataset_name):
+        """
+        Returns:
+            iterable
+
+        It now calls :func:`detectron2.data.build_detection_test_loader`.
+        Overwrite it if you'd like a different data loader.
+        """
+        mapper = PhenoBenchDatasetMapper(cfg, False, cfg.TEST.NO_EVAL, tfm_gens=[])
+        if cfg.TEST.NO_EVAL:
+            dataset = DatasetCatalog.get(cfg.DATASETS.TEST_NO_EVAL[0])
         else:
-            mapper = None
-            return build_detection_train_loader(cfg, mapper=mapper)
+            dataset = DatasetCatalog.get(cfg.DATASETS.TEST[0])
+        return build_detection_test_loader(dataset=dataset, mapper=mapper)
 
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
@@ -205,6 +147,7 @@ class Trainer(DefaultTrainer):
 
         params: List[Dict[str, Any]] = []
         memo: Set[torch.nn.parameter.Parameter] = set()
+
         for module_name, module in model.named_modules():
             for module_param_name, value in module.named_parameters(recurse=False):
                 if not value.requires_grad:
@@ -261,22 +204,6 @@ class Trainer(DefaultTrainer):
             optimizer = maybe_add_gradient_clipping(cfg, optimizer)
         return optimizer
 
-    @classmethod
-    def test_with_TTA(cls, cfg, model):
-        logger = logging.getLogger("detectron2.trainer")
-        # In the end of training, run an evaluation with TTA.
-        logger.info("Running inference with test-time augmentation ...")
-        model = SemanticSegmentorWithTTA(cfg, model)
-        evaluators = [
-            cls.build_evaluator(
-                cfg, name, output_folder=os.path.join(cfg.OUTPUT_DIR, "inference_TTA")
-            )
-            for name in cfg.DATASETS.TEST
-        ]
-        res = cls.test(cfg, model, evaluators)
-        res = OrderedDict({k + "_TTA": v for k, v in res.items()})
-        return res
-
 
 def setup(args):
     """
@@ -304,13 +231,12 @@ def main(args):
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
         res = Trainer.test(cfg, model)
-        if cfg.TEST.AUG.ENABLED:
-            res.update(Trainer.test_with_TTA(cfg, model))
         if comm.is_main_process():
             verify_results(cfg, res)
         return res
 
     trainer = Trainer(cfg)
+
     trainer.resume_or_load(resume=args.resume)
     return trainer.train()
 

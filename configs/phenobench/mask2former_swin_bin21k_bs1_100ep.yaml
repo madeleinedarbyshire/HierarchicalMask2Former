@@ -1,0 +1,17 @@
+_BASE_: mask2former_R50_bs1_100ep.yaml
+MODEL:
+  BACKBONE:
+    NAME: "D2SwinTransformer"
+  SWIN:
+    EMBED_DIM: 128
+    DEPTHS: [2, 2, 18, 2]
+    NUM_HEADS: [4, 8, 16, 32]
+    WINDOW_SIZE: 12
+    APE: False
+    DROP_PATH_RATE: 0.3
+    PATCH_NORM: True
+    PRETRAIN_IMG_SIZE: 384
+  WEIGHTS: "edited_swin_bin21k.pkl"
+TEST:
+  EVAL_PERIOD: 5000
+OUTPUT_DIR: output/swin_bin21k_freeze_bb_4_lr_00001_100_dist
