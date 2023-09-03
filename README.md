@@ -1,34 +1,84 @@
 # Hierarchical Mask2Former for Segmenting Crops, Weeds and Leaves
 
-
 ## Installation
 
-See [installation instructions](INSTALL.md).
+### Requirements
+- Linux or macOS with Python ≥ 3.6
+- PyTorch ≥ 1.9 and [torchvision](https://github.com/pytorch/vision/) that matches the PyTorch installation.
+  Install them together at [pytorch.org](https://pytorch.org) to make sure of this. Note, please check
+  PyTorch version matches that is required by Detectron2.
+- Detectron2: follow [Detectron2 installation instructions](https://detectron2.readthedocs.io/tutorials/install.html).
+- OpenCV is optional but needed by demo and visualization
+- `pip install -r requirements.txt`
+
+### CUDA kernel for MSDeformAttn
+After preparing the required environment, run the following command to compile CUDA kernel for MSDeformAttn:
+
+`CUDA_HOME` must be defined and points to the directory of the installed CUDA toolkit.
+
+```bash
+cd mask2former/modeling/pixel_decoder/ops
+sh make.sh
+```
+
+#### Building on another system
+To build on a system that does not have a GPU device but provide the drivers:
+```bash
+TORCH_CUDA_ARCH_LIST='8.0' FORCE_CUDA=1 python setup.py build install
+```
+
+### Example conda environment setup
+```bash
+conda create --name mask2former python=3.8 -y
+conda activate mask2former
+conda install pytorch==1.9.0 torchvision==0.10.0 cudatoolkit=11.1 -c pytorch -c nvidia
+pip install -U opencv-python
+
+# under your working directory
+git clone git@github.com:facebookresearch/detectron2.git
+cd detectron2
+pip install -e .
+
+cd ..
+git clone git@github.com:facebookresearch/Mask2Former.git
+cd Mask2Former
+pip install -r requirements.txt
+cd mask2former/modeling/pixel_decoder/ops
+sh make.sh
+```
 
 ## Getting Started
+To train:
+```
+python train_net.py --num-gpus 2 --config-file configs/phenobench/mask2former_R50_bs2_100ep.yaml
+```
 
-See [Preparing Datasets for Mask2Former](datasets/README.md).
+To test:
+```
+python train_net.py --num-gpus 2 --config-file configs/phenobench/mask2former_R50_bs2_100ep.yaml \
+--eval-only MODEL.WEIGHTS path/to/weights
+```
 
-See [Getting Started with Mask2Former](GETTING_STARTED.md).
-
-Run our demo using Colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1uIWE5KbGFSjrxey2aRd5pWkKNY1_SaNq)
-
-Integrated into [Huggingface Spaces 🤗](https://huggingface.co/spaces) using [Gradio](https://github.com/gradio-app/gradio). Try out the Web Demo: [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/akhaliq/Mask2Former)
-
-Replicate web demo and docker image is available here: [![Replicate](https://replicate.com/facebookresearch/mask2former/badge)](https://replicate.com/facebookresearch/mask2former)
-
-## Advanced usage
-
-See [Advanced Usage of Mask2Former](ADVANCED_USAGE.md).
+## Citation
+If you find my work useful please consider the following bibtex entry:
+```
+@article{hierarchical2023darbyshire,
+         author = {Darbyshire, Madeleine and Sklar, Elizabeth and Parsons, Simon},
+         year = {2023},
+         month = {08},
+         pages = {},
+         title = {Hierarchical Mask2Former: Panoptic Segmentation of Crops, Weeds and Leaves},
+         doi = {10.13140/RG.2.2.33051.23847}
+}
+```
 
 ## License
 
 Shield: [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-The majority of Mask2Former is licensed under a [MIT License](LICENSE).
+The majority of Hierarchical Mask2Former is licensed under an MIT License.
 
-
-However portions of the project are available under separate license terms: Swin-Transformer-Semantic-Segmentation is licensed under the [MIT license](https://github.com/SwinTransformer/Swin-Transformer-Semantic-Segmentation/blob/main/LICENSE), Deformable-DETR is licensed under the [Apache-2.0 License](https://github.com/fundamentalvision/Deformable-DETR/blob/main/LICENSE).
+However portions of the project are available under separate license terms: Mask2Former is licensed under the [MIT license](https://github.com/facebookresearch/Mask2Former/blob/main/LICENSE), Swin-Transformer-Semantic-Segmentation is licensed under the [MIT license](https://github.com/SwinTransformer/Swin-Transformer-Semantic-Segmentation/blob/main/LICENSE), Deformable-DETR is licensed under the [Apache-2.0 License](https://github.com/fundamentalvision/Deformable-DETR/blob/main/LICENSE).
 
 ## Acknowledgement
 
