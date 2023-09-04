@@ -1,4 +1,8 @@
 # Hierarchical Mask2Former for Segmenting Crops, Weeds and Leaves
+An adaptation of [Mask2Former](https://github.com/facebookresearch/Mask2Former) to perform hierarchical panoptic segmentation of crops, weeds and leaves. For implementation details read [our preprint](https://www.researchgate.net/publication/373549760_Hierarchical_Mask2Former_Panoptic_Segmentation_of_Crops_Weeds_and_Leaves).
+
+## Dataset
+The implementation was tested on the [PhenoBench Dataset](https://www.phenobench.org).
 
 ## Installation
 
@@ -7,7 +11,9 @@
 - PyTorch ≥ 1.9 and [torchvision](https://github.com/pytorch/vision/) that matches the PyTorch installation.
   Install them together at [pytorch.org](https://pytorch.org) to make sure of this. Note, please check
   PyTorch version matches that is required by Detectron2.
-- Detectron2: follow [Detectron2 installation instructions](https://detectron2.readthedocs.io/tutorials/install.html).
+- Detectron2:
+  - `python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'`
+  - Or other installation options can be found at [Detectron2 installation instructions](https://detectron2.readthedocs.io/tutorials/install.html).
 - OpenCV is optional but needed by demo and visualization
 - `pip install -r requirements.txt`
 
