@@ -294,12 +294,7 @@ class MaskFormer(nn.Module):
         scores, labels = F.softmax(mask_cls, dim=-1).max(-1)
         mask_pred = mask_pred.sigmoid()
 
-        # if level == "leaf":
-        #     object_mask_threshold = 0.2
-        # else:
-        object_mask_threshold = self.object_mask_threshold
-
-        keep = labels.ne(num_classes) & (scores > object_mask_threshold)
+        keep = labels.ne(num_classes) & (scores > self.object_mask_threshold)
         cur_scores = scores[keep]
         cur_classes = labels[keep]
         cur_masks = mask_pred[keep]
