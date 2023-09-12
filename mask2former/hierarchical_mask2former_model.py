@@ -1,6 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 from typing import Tuple
 import numpy as np
+import time
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -115,17 +116,14 @@ class MaskFormer(nn.Module):
             num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
         )
 
-        # divisor = 3
-        # weight_dict = {"loss_ce": class_weight, "plant_loss_mask": mask_weight, "plant_loss_dice": dice_weight}
         weight_dict = {"plant_loss_ce": class_weight / 2, "leaf_loss_ce": class_weight / 2, "plant_loss_mask": mask_weight / 2, "plant_loss_dice": dice_weight / 2, "leaf_loss_mask": mask_weight / 2, "leaf_loss_dice": dice_weight / 2}
 
-        # TODO: Implement deep supervision
-        # if deep_supervision:
-        #     dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
-        #     aux_weight_dict = {}
-        #     for i in range(dec_layers - 1):
-        #         aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
-        #     weight_dict.update(aux_weight_dict)
+        if deep_supervision:
+            dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
+            aux_weight_dict = {}
+            for i in range(dec_layers - 1):
+                aux_weight_dict.update({k + f"_{i}": v for k, v in weight_dict.items()})
+            weight_dict.update(aux_weight_dict)
 
         losses = ["plant_labels", "leaf_labels", "plant_masks", "leaf_masks"]
 
@@ -197,8 +195,17 @@ class MaskFormer(nn.Module):
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.size_divisibility)
 
+        # t1 = time.time()
+
         features = self.backbone(images.tensor)
+
+        # t2 = time.time()
+        # print('Backbone:', t2 - t1)
+
         outputs = self.sem_seg_head(features)
+
+        # t3 = time.time()
+        # print('Head:', t3 - t2)
 
         if self.training:
             # mask classification target
@@ -249,10 +256,11 @@ class MaskFormer(nn.Module):
 
                     # semantic segmentation inference
                     if self.semantic_on:
-                        r = retry_if_cuda_oom(self.semantic_inference)(mask_cls_result, mask_pred_result)
-                        if not self.sem_seg_postprocess_before_inference:
-                            r = retry_if_cuda_oom(sem_seg_postprocess)(r, image_size, height, width)
-                        processed_results[-1][f"{level}_sem_seg"] = r
+                        if level == "plant":
+                            r = retry_if_cuda_oom(self.semantic_inference)(mask_cls_result, mask_pred_result)
+                            if not self.sem_seg_postprocess_before_inference:
+                                r = retry_if_cuda_oom(sem_seg_postprocess)(r, image_size, height, width)
+                            processed_results[-1][f"{level}_sem_seg"] = r
 
                     # panoptic segmentation inference
                     if self.panoptic_on:
@@ -267,6 +275,10 @@ class MaskFormer(nn.Module):
                     if self.instance_on:
                         instance_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result)
                         processed_results[-1][f"{level}_instances"] = instance_r
+
+            # t4 = time.time()
+            
+            # print('Post processing:', t4 - t3)
 
             return processed_results
 

@@ -50,10 +50,7 @@ from mask2former import (
     add_maskformer2_config,
 )
 
-from detectron2.data.datasets import register_coco_instances
 from register_phenobench import register_phenobench
-
-# TEST = False
 
 meta = {"thing_dataset_id_to_contiguous_id": {1:1, 2:2},
         "stuff_dataset_id_to_contiguous_id": {0:0},

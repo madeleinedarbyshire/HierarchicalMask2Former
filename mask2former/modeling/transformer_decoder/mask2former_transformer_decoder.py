@@ -2,7 +2,6 @@
 # Modified by Bowen Cheng from: https://github.com/facebookresearch/detr/blob/master/models/detr.py
 import logging
 import fvcore.nn.weight_init as weight_init
-import numpy as np
 from typing import Optional
 import torch
 from torch import nn, Tensor
@@ -204,7 +203,11 @@ class MLP(nn.Module):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
+
+@TRANSFORMER_DECODER_REGISTRY.register()
 class MultiScaleMaskedTransformerDecoder(nn.Module):
+
+    _version = 2
 
     def _load_from_state_dict(
         self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
@@ -229,35 +232,46 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                     "Please upgrade your models. Applying automatic conversion now ..."
                 )
 
+    @configurable
     def __init__(
         self,
+        in_channels,
+        mask_classification=True,
+        *,
         num_classes: int,
         hidden_dim: int,
+        num_queries: int,
         nheads: int,
         dim_feedforward: int,
         dec_layers: int,
         pre_norm: bool,
         mask_dim: int,
-        skipped_layers: [int],
-        level: str
+        enforce_input_project: bool,
     ):
         """
         NOTE: this interface is experimental.
         Args:
+            in_channels: channels of the input features
+            mask_classification: whether to add mask classifier or not
             num_classes: number of classes
             hidden_dim: Transformer feature dimension
+            num_queries: number of queries
             nheads: number of heads
             dim_feedforward: feature dimension in feedforward network
             enc_layers: number of Transformer encoder layers
             dec_layers: number of Transformer decoder layers
             pre_norm: whether to use pre-LayerNorm or not
             mask_dim: mask feature dimension
+            enforce_input_project: add input project 1x1 conv even if input
+                channels and hidden dim is identical
         """
         super().__init__()
+        assert mask_classification, "Only support mask classification model"
+        self.mask_classification = mask_classification
 
-        self.num_feature_levels = 3
-        self.skipped_layers = skipped_layers
-        self.level = level
+        # positional encoding
+        N_steps = hidden_dim // 2
+        self.pe_layer = PositionEmbeddingSine(N_steps, normalize=True)
         
         # define Transformer decoder here
         self.num_heads = nheads
@@ -294,153 +308,9 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
                 )
             )
 
-        self.decoder_norm = nn.LayerNorm(hidden_dim)
+        self.plant_decoder_norm = nn.LayerNorm(hidden_dim)
+        self.leaf_decoder_norm = nn.LayerNorm(hidden_dim)
 
-        self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
-        self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
-
-    def forward(self, output, mask_features, size_list, src, pos, query_embed):
-    
-        predictions_class = []
-        predictions_mask = []
-
-        # prediction heads on learnable query features
-        outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[0])
-        predictions_class.append(outputs_class)
-        predictions_mask.append(outputs_mask)
-
-        # new_skips = skips
-
-        for i in range(self.num_layers):
-            level_index = i % self.num_feature_levels
-            attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
-            # attention: cross-attention first
-            output = self.transformer_cross_attention_layers[i](
-                output, src[level_index],
-                memory_mask=attn_mask,
-                memory_key_padding_mask=None,  # here we do not apply masking on padded region
-                pos=pos[level_index], query_pos=query_embed
-            )
-
-            output = self.transformer_self_attention_layers[i](
-                output, tgt_mask=None,
-                tgt_key_padding_mask=None,
-                query_pos=query_embed
-            )
-            
-            # FFN
-            output = self.transformer_ffn_layers[i](output)
-            # if i in self.skipped_layers:
-            #     new_skips[i] = output
-
-            outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
-            predictions_class.append(outputs_class)
-            predictions_mask.append(outputs_mask)
-
-        assert len(predictions_class) == self.num_layers + 1
-
-        out = {
-            'pred_logits': predictions_class[-1],
-            'pred_masks': predictions_mask[-1],
-            'aux_outputs': self._set_aux_loss(predictions_class, predictions_mask)
-            # 'skips': new_skips
-        }
-        return out
-
-    def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
-        decoder_output = self.decoder_norm(output)
-        decoder_output = decoder_output.transpose(0, 1)
-        outputs_class = self.class_embed(decoder_output)
-        mask_embed = self.mask_embed(decoder_output)
-        outputs_mask = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
-
-        # NOTE: prediction is of higher-resolution
-        # [B, Q, H, W] -> [B, Q, H*W] -> [B, h, Q, H*W] -> [B*h, Q, HW]
-        attn_mask = F.interpolate(outputs_mask, size=attn_mask_target_size, mode="bilinear", align_corners=False)
-        # must use bool type
-        # If a BoolTensor is provided, positions with ``True`` are not allowed to attend while ``False`` values will be unchanged.
-        attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()
-        attn_mask = attn_mask.detach()
-        return outputs_class, outputs_mask, attn_mask
-
-    @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_seg_masks):
-        # this is a workaround to make torchscript happy, as torchscript
-        # doesn't support dictionary with non-homogeneous values, such
-        # as a dict having both a Tensor and a list.
-        return [
-            {f"{self.level}_pred_logits": a, f"{self.level}_pred_masks": b}
-            for a, b in zip(outputs_class[:-1], outputs_seg_masks[:-1])
-        ]
-
-@TRANSFORMER_DECODER_REGISTRY.register()
-class HierarchicalDecoder(nn.Module):
-    def _load_from_state_dict(
-            self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
-        ):
-        version = local_metadata.get("version", None)
-        if version is None or version < 2:
-            # Do not warn if train from scratch
-            scratch = True
-            logger = logging.getLogger(__name__)
-            for k in list(state_dict.keys()):
-                newk = k
-                if "static_query" in k:
-                    newk = k.replace("static_query", "query_feat")
-                if newk != k:
-                    state_dict[newk] = state_dict[k]
-                    del state_dict[k]
-                    scratch = False
-
-            if not scratch:
-                logger.warning(
-                    f"Weight format of {self.__class__.__name__} have changed! "
-                    "Please upgrade your models. Applying automatic conversion now ..."
-                )
-
-    @configurable
-    def __init__(
-        self,
-        in_channels,
-        mask_classification=True,
-        *,
-        num_classes: int,
-        hidden_dim: int,
-        num_queries: int,
-        nheads: int,
-        dim_feedforward: int,
-        dec_layers: int,
-        pre_norm: bool,
-        mask_dim: int,
-        enforce_input_project: bool,
-        skipped_layers: [int]
-    ):
-        """
-        NOTE: this interface is experimental.
-        Args:
-            in_channels: channels of the input features
-            mask_classification: whether to add mask classifier or not
-            num_classes: number of classes
-            hidden_dim: Transformer feature dimension
-            num_queries: number of queries
-            nheads: number of heads
-            dim_feedforward: feature dimension in feedforward network
-            enc_layers: number of Transformer encoder layers
-            dec_layers: number of Transformer decoder layers
-            pre_norm: whether to use pre-LayerNorm or not
-            mask_dim: mask feature dimension
-            enforce_input_project: add input project 1x1 conv even if input
-                channels and hidden dim is identical
-        """
-        super().__init__()
-
-        assert mask_classification, "Only support mask classification model"
-        self.mask_classification = mask_classification
-        self.num_layers = dec_layers
-
-        # positional encoding
-        N_steps = hidden_dim // 2
-        self.pe_layer = PositionEmbeddingSine(N_steps, normalize=True)
         self.num_queries = num_queries
         # learnable query features
         self.query_feat = nn.Embedding(num_queries, hidden_dim)
@@ -458,8 +328,14 @@ class HierarchicalDecoder(nn.Module):
             else:
                 self.input_proj.append(nn.Sequential())
 
-        self.plant_decoder = MultiScaleMaskedTransformerDecoder(num_classes, hidden_dim, nheads, dim_feedforward, dec_layers, pre_norm, mask_dim, skipped_layers, "plant")
-        self.leaf_decoder = MultiScaleMaskedTransformerDecoder(2, hidden_dim, nheads, dim_feedforward, dec_layers, pre_norm, mask_dim, skipped_layers, "leaf")
+        # output FFNs
+        if self.mask_classification:
+            # num classes + 1 = 3 + 1
+            self.plant_embed = nn.Linear(hidden_dim, 4)
+            # num classes + 1 = 2 + 1
+            self.leaf_embed = nn.Linear(hidden_dim, 3)
+        self.plant_mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
+        self.leaf_mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
 
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
@@ -485,7 +361,6 @@ class HierarchicalDecoder(nn.Module):
         ret["enforce_input_project"] = cfg.MODEL.MASK_FORMER.ENFORCE_INPUT_PROJ
 
         ret["mask_dim"] = cfg.MODEL.SEM_SEG_HEAD.MASK_DIM
-        ret["skipped_layers"] = cfg.MODEL.MASK_FORMER.SKIPS
 
         return ret
 
@@ -514,22 +389,89 @@ class HierarchicalDecoder(nn.Module):
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
         output = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1)
 
-        # skips = [torch.zeros_like(output) for _ in range(self.num_layers)]
+        plant_predictions_class = []
+        plant_predictions_mask = []
 
-        plant_output = self.plant_decoder.forward(output, mask_features, size_list, src, pos, query_embed)
-        leaf_output = self.leaf_decoder.forward(output, mask_features, size_list, src, pos, query_embed)
-        
-        aux_outputs = []
-        for dict1, dict2 in zip(plant_output["aux_outputs"], leaf_output["aux_outputs"]):
-            merged_dict = {**dict1, **dict2}
-            aux_outputs.append(merged_dict)
+        leaf_predictions_class = []
+        leaf_predictions_mask = []
 
+        # prediction heads on learnable query features
+        plant_outputs_mask, leaf_outputs_mask, plant_outputs_class, leaf_outputs_class, attn_mask = self.forward_prediction_heads(output, mask_features, size_list[0])
 
-        out = {"plant_pred_logits": plant_output["pred_logits"],
-               "plant_pred_masks": plant_output["pred_masks"],
-               "leaf_pred_logits": leaf_output["pred_logits"],
-               "leaf_pred_masks": leaf_output["pred_masks"],
-               "aux_outputs": aux_outputs}
+        plant_predictions_class.append(plant_outputs_class)
+        plant_predictions_mask.append(plant_outputs_mask)
+        leaf_predictions_class.append(leaf_outputs_class)
+        leaf_predictions_mask.append(leaf_outputs_mask)
+
+        for i in range(self.num_layers):
+            level_index = i % self.num_feature_levels
+            attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
+            # attention: cross-attention first
+            output = self.transformer_cross_attention_layers[i](
+                output, src[level_index],
+                memory_mask=attn_mask,
+                memory_key_padding_mask=None,  # here we do not apply masking on padded region
+                pos=pos[level_index], query_pos=query_embed
+            )
+
+            output = self.transformer_self_attention_layers[i](
+                output, tgt_mask=None,
+                tgt_key_padding_mask=None,
+                query_pos=query_embed
+            )
+            
+            # FFN
+            output = self.transformer_ffn_layers[i](
+                output
+            )
+
+            plant_outputs_mask, leaf_outputs_mask, plant_outputs_class, leaf_outputs_class, attn_mask = self.forward_prediction_heads(output, mask_features, size_list[(i + 1) % self.num_feature_levels])
+
+            plant_predictions_class.append(plant_outputs_class)
+            plant_predictions_mask.append(plant_outputs_mask)
+            leaf_predictions_class.append(leaf_outputs_class)
+            leaf_predictions_mask.append(leaf_outputs_mask)
+
+        out = {
+            'plant_pred_logits': plant_predictions_class[-1],
+            'plant_pred_masks': plant_predictions_mask[-1],
+            'leaf_pred_logits': leaf_predictions_class[-1],
+            'leaf_pred_masks': leaf_predictions_mask[-1],
+            'aux_outputs': self._set_aux_loss(plant_predictions_class, plant_predictions_mask, leaf_predictions_class, leaf_predictions_mask),
+        }
         return out
 
+    def forward_prediction_heads(self, output, mask_features, attn_mask_target_size):
+        plant_decoder_output = self.plant_decoder_norm(output)
+        plant_decoder_output = plant_decoder_output.transpose(0, 1)
+        plant_outputs_class = self.plant_embed(plant_decoder_output)
+        plant_mask_embed = self.plant_mask_embed(plant_decoder_output)
+        plant_outputs_mask = torch.einsum("bqc,bchw->bqhw", plant_mask_embed, mask_features)
+
+        leaf_decoder_output = self.leaf_decoder_norm(output)
+        leaf_decoder_output = leaf_decoder_output.transpose(0, 1)
+        leaf_outputs_class = self.leaf_embed(leaf_decoder_output)
+        leaf_mask_embed = self.leaf_mask_embed(plant_decoder_output)
+        leaf_outputs_mask = torch.einsum("bqc,bchw->bqhw", leaf_mask_embed, mask_features)
         
+        outputs_mask = plant_outputs_mask + leaf_outputs_mask
+
+        # NOTE: prediction is of higher-resolution
+        # [B, Q, H, W] -> [B, Q, H*W] -> [B, h, Q, H*W] -> [B*h, Q, HW]
+        attn_mask = F.interpolate(outputs_mask, size=attn_mask_target_size, mode="bilinear", align_corners=False)
+        # must use bool type
+        # If a BoolTensor is provided, positions with ``True`` are not allowed to attend while ``False`` values will be unchanged.
+        attn_mask = (attn_mask.sigmoid().flatten(2).unsqueeze(1).repeat(1, self.num_heads, 1, 1).flatten(0, 1) < 0.5).bool()
+        attn_mask = attn_mask.detach()
+
+        return plant_outputs_mask, leaf_outputs_mask, plant_outputs_class, leaf_outputs_class, attn_mask
+
+    @torch.jit.unused
+    def _set_aux_loss(self, plant_outputs_class, plant_outputs_seg_masks, leaf_outputs_class, leaf_outputs_seg_masks):
+        # this is a workaround to make torchscript happy, as torchscript
+        # doesn't support dictionary with non-homogeneous values, such
+        # as a dict having both a Tensor and a list.
+        return [
+            {"plant_pred_logits": a, "plant_pred_masks": b, "leaf_pred_logits": a, "leaf_pred_masks": b}
+            for a, b, c, d in zip(plant_outputs_class[:-1], plant_outputs_seg_masks[:-1], leaf_outputs_class[:-1], leaf_outputs_seg_masks[:-1])
+        ]

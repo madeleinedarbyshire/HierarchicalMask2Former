@@ -29,6 +29,18 @@ sys.path.insert(1, os.path.join(sys.path[0], '..'))
 
 from mask2former import add_maskformer2_config
 
+from register_phenobench import register_phenobench
+
+meta = {"thing_dataset_id_to_contiguous_id": {1:1, 2:2},
+        "stuff_dataset_id_to_contiguous_id": {0:0},
+        "thing_classes": ['crop', 'weed'],
+        "thing_colors": [(66, 135, 245), (245, 66, 66)], 
+        "stuff_classes": ['soil']}
+
+register_phenobench("phenobench_train", meta, "/workspace/PhenoBench", split="train")
+register_phenobench("phenobench_val", meta, "/workspace/PhenoBench", split="val")
+register_phenobench("phenobench_test", meta, "/workspace/PhenoBench", split="test")
+
 logger = logging.getLogger("detectron2")
 
 

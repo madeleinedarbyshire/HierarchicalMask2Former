@@ -237,15 +237,16 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
-
-        # Retrieve the matching between the outputs of the last layer and the targets
-        # Compute the average number of target boxes accross all nodes, for normalization purposes
-
-        # Compute all the requested losses
         losses = {}
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets))
+
+        for i, aux_outputs in enumerate(outputs["aux_outputs"]):
+            for loss in self.losses:
+                l_dict = self.get_loss(loss, aux_outputs, targets)
+                l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
+                losses.update(l_dict)
+
         return losses
 
     def __repr__(self):

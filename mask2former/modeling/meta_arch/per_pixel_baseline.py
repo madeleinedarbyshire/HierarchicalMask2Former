@@ -72,7 +72,6 @@ class PerPixelBaselineHead(nn.Module):
         self.ignore_value = ignore_value
         self.common_stride = 4
         self.loss_weight = loss_weight
-
         self.pixel_decoder = pixel_decoder
         self.predictor = Conv2d(
             self.pixel_decoder.mask_dim, num_classes, kernel_size=1, stride=1, padding=0

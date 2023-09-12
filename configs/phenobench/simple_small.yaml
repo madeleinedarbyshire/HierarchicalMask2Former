@@ -1,0 +1,11 @@
+_BASE_: simple.yaml
+MODEL:
+  MASK_FORMER:
+    DEEP_SUPERVISION: True
+    DEC_LAYERS: 4
+SOLVER:
+  IMS_PER_BATCH: 3
+  BASE_LR: 0.0001
+  STEPS: (39187, 45485)
+  MAX_ITER: 46900
+OUTPUT_DIR: output/simple_compact_0001

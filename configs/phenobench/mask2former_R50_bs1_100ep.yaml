@@ -4,4 +4,4 @@ SOLVER:
   BASE_LR: 0.00001
   STEPS: (117562, 136456)
   MAX_ITER: 140700
-OUTPUT_DIR: output/freeze_bb_4_lr_00001_300_dist_skips_mod2
+OUTPUT_DIR: output/another_test
