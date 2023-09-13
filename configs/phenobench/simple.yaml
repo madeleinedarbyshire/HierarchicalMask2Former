@@ -38,7 +38,7 @@ MODEL:
   MASK_FORMER:
     TRANSFORMER_DECODER_NAME: "MultiScaleMaskedTransformerDecoder"
     TRANSFORMER_IN_FEATURE: "multi_scale_pixel_decoder"
-    DEEP_SUPERVISION: True
+    DEEP_SUPERVISION: False
     NO_OBJECT_WEIGHT: 0.1
     CLASS_WEIGHT: 2.0
     MASK_WEIGHT: 5.0
