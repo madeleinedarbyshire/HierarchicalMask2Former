@@ -23,8 +23,9 @@ from mask2former import add_maskformer2_config
 
 parser = argparse.ArgumentParser(description="Example argparse parser for config and weights.")
 
-parser.add_argument("--config_file", type=str, help="Path to the configuration file")
+parser.add_argument("--config", type=str, help="Path to the configuration file")
 parser.add_argument("--weights", type=str, help="Path to the weights file")
+parser.add_argument("--batch-size", type=int, help="Batch size")
 
 args = parser.parse_args()
 
@@ -47,7 +48,7 @@ def setup(args):
     # for poly lr schedule
     add_deeplab_config(cfg)
     add_maskformer2_config(cfg)
-    cfg.merge_from_file(args.config_file)
+    cfg.merge_from_file(args.config)
     # cfg.merge_from_list(args.opts)
     cfg.MODEL.WEIGHTS = args.weights
     cfg.freeze()
@@ -65,19 +66,17 @@ model.eval()
 print('Warm up...')
 warmup()
 
-print('Run inference...')
-
-
+print(f'Run inference with batch size: {args.batch_size}...')
+batch = []
 for i, image in enumerate(data):
     im = np.array(image["image"])
     im = torch.as_tensor(np.ascontiguousarray(im.transpose(2, 0, 1)))
-    if i % 2 == 0:
-        batch = [{'image': im}]
-    else:
-        batch.append({'image': im})
-        # batch = torch.stack(batch)
+    batch.append({'image': im})
+    if (i + 1) % args.batch_size == 0:
         start_time = time.time()
         with torch.no_grad():
             outputs = model(batch)
         end_time = time.time()
+        batch = []
+        
 
