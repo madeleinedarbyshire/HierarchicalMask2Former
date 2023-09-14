@@ -5,6 +5,7 @@ import time
 import torch
 from torch import nn
 from torch.nn import functional as F
+import csv
 
 from detectron2.config import configurable
 from detectron2.data import MetadataCatalog
@@ -195,17 +196,19 @@ class MaskFormer(nn.Module):
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.size_divisibility)
 
-        # t1 = time.time()
+        times = []
+
+        t1 = time.time()
 
         features = self.backbone(images.tensor)
 
-        # t2 = time.time()
-        # print('Backbone:', t2 - t1)
+        t2 = time.time()
+        times.append(t2 - t1)
 
         outputs = self.sem_seg_head(features)
 
-        # t3 = time.time()
-        # print('Head:', t3 - t2)
+        t3 = time.time()
+        times.append(t3 - t2)
 
         if self.training:
             # mask classification target
@@ -276,9 +279,13 @@ class MaskFormer(nn.Module):
                         instance_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result)
                         processed_results[-1][f"{level}_instances"] = instance_r
 
-            # t4 = time.time()
-            
-            # print('Post processing:', t4 - t3)
+            t4 = time.time()
+            times.append(t4 - t3)
+
+            with open("inference_speeds.csv", mode="a", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(times)
+
 
             return processed_results
 
