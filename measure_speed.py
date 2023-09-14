@@ -51,6 +51,7 @@ def setup(args):
     cfg.merge_from_file(args.config)
     # cfg.merge_from_list(args.opts)
     cfg.MODEL.WEIGHTS = args.weights
+    cfg.SOLVER.IMS_PER_BATCH = args.batch_size
     cfg.freeze()
     default_setup(cfg, args)
     # Setup logger for "mask_former" module
