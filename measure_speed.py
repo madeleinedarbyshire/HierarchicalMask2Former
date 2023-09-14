@@ -6,6 +6,8 @@ from detectron2.data import MetadataCatalog
 from PIL import Image
 import time
 import numpy as np
+import cv2
+from detectron2.modeling import build_model
 
 import detectron2.utils.comm as comm
 
@@ -57,14 +59,25 @@ def setup(args):
 cfg = setup(args)
 predictor = DefaultPredictor(cfg)
 data = PhenoBench("/workspace/PhenoBench", split="val", target_types=[], make_unique_ids=True)
+model = build_model(cfg)
+model.eval()
 
 print('Warm up...')
 warmup()
 
 print('Run inference...')
-for d in data:
-    image = np.array(d["image"])
-    start_time = time.time()
-    outputs = predictor(image)
-    end_time = time.time()
+
+
+for i, image in enumerate(data):
+    im = np.array(image["image"])
+    im = torch.as_tensor(np.ascontiguousarray(im.transpose(2, 0, 1)))
+    if i % 2 == 0:
+        batch = [{'image': im}]
+    else:
+        batch.append({'image': im})
+        # batch = torch.stack(batch)
+        start_time = time.time()
+        with torch.no_grad():
+            outputs = model(batch)
+        end_time = time.time()
 

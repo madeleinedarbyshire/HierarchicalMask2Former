@@ -196,6 +196,8 @@ class MaskFormer(nn.Module):
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.size_divisibility)
 
+        batch_size = len(images)
+
         times = []
 
         t1 = time.time()
@@ -203,12 +205,12 @@ class MaskFormer(nn.Module):
         features = self.backbone(images.tensor)
 
         t2 = time.time()
-        times.append(t2 - t1)
+        times.append((t2 - t1) / batch_size)
 
         outputs = self.sem_seg_head(features)
 
         t3 = time.time()
-        times.append(t3 - t2)
+        times.append((t3 - t2) / batch_size)
 
         if self.training:
             # mask classification target
@@ -280,7 +282,7 @@ class MaskFormer(nn.Module):
                         processed_results[-1][f"{level}_instances"] = instance_r
 
             t4 = time.time()
-            times.append(t4 - t3)
+            times.append((t4 - t3) / batch_size)
 
             with open("inference_speeds.csv", mode="a", newline="") as file:
                 writer = csv.writer(file)
