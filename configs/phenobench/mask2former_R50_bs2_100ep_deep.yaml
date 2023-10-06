@@ -1,5 +1,0 @@
-_BASE_: mask2former_R50_bs2_100ep.yaml
-MODEL:
-  MASK_FORMER:
-    DEEP_SUPERVISION: True
-OUTPUT_DIR: output/R50_deep_supervision_0001

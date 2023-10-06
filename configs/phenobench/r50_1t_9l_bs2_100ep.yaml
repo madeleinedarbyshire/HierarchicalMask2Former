@@ -2,9 +2,9 @@ MODEL:
   BACKBONE:
     FREEZE_AT: 4
     NAME: "build_resnet_backbone"
-  WEIGHTS: "model_final_94dc52.pkl"
-  PIXEL_MEAN: [123.675, 116.280, 103.530]
-  PIXEL_STD: [58.395, 57.120, 57.375]
+  WEIGHTS: "models/edited_r50_coco_head_only.pkl"
+  PIXEL_MEAN: [124.578, 97.773, 65.357]
+  PIXEL_STD: [58.341, 48.268, 37.847]
   RESNETS:
     DEPTH: 50
     STEM_TYPE: "basic"  # not used
@@ -29,13 +29,8 @@ MODEL:
     DEFORMABLE_TRANSFORMER_ENCODER_IN_FEATURES: ["res3", "res4", "res5"]
     COMMON_STRIDE: 4
     TRANSFORMER_ENC_LAYERS: 6
-  ROI_HEADS:
-    NUM_CLASSES: 2
-  RETINANET:
-    NUM_CLASSES: 2
   MASK_FORMER:
-    TRANSFORMER_DECODER_NAME: "HierarchicalDecoder"
-    # TRANSFORMER_DECODER_NAME: "MultiScaleMaskedTransformerDecoder"
+    TRANSFORMER_DECODER_NAME: "MultiScaleMaskedTransformerDecoder"
     TRANSFORMER_IN_FEATURE: "multi_scale_pixel_decoder"
     DEEP_SUPERVISION: False
     NO_OBJECT_WEIGHT: 0.1
@@ -57,21 +52,19 @@ MODEL:
     IMPORTANCE_SAMPLE_RATIO: 0.75
     TEST:
       SEMANTIC_ON: True
-      INSTANCE_ON: True
+      INSTANCE_ON: False
       PANOPTIC_ON: True
       OVERLAP_THRESHOLD: 0.8
       OBJECT_MASK_THRESHOLD: 0.8
 DATASETS:
   TRAIN: ("phenobench_train",)
-  TEST: ("phenobench_test",)
+  TEST: ("phenobench_val",)
+  TEST_NO_EVAL: ("phenobench_test",)
 SOLVER:
-  IMS_PER_BATCH: 1
-  BASE_LR: 0.00001
-  STEPS: (176345, 204685)
-  MAX_ITER: 211050
-  # MAX_ITER: 422100
-  # MAX_ITER: 75000
-  # MAX_ITER: 10000
+  IMS_PER_BATCH: 2
+  BASE_LR: 0.0001
+  STEPS: (58781, 68228)
+  MAX_ITER: 70350
   WARMUP_FACTOR: 1.0
   WARMUP_ITERS: 10
   WEIGHT_DECAY: 0.05
@@ -86,14 +79,13 @@ SOLVER:
     ENABLED: True
 INPUT:
   IMAGE_SIZE: 1024
-  MIN_SCALE: 0.1
-  MAX_SCALE: 2.0
+  MIN_SCALE: 0.8
+  MAX_SCALE: 1.2
   FORMAT: "RGB"
-  # DATASET_MAPPER_NAME: "coco_panoptic_lsj"
 TEST:
   EVAL_PERIOD: 5000
 DATALOADER:
   FILTER_EMPTY_ANNOTATIONS: True
   NUM_WORKERS: 4
 VERSION: 2
-OUTPUT_DIR: output/test
+OUTPUT_DIR: output/R50_1t_9l_bs2_100ep
