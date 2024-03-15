@@ -104,17 +104,9 @@ class PhenoBenchEvaluator(DatasetEvaluator):
 
         def evaluate(self):
             if not self.test:
+                print('Evaluating Results...')
                 logger = logging.getLogger(__name__)
-                if comm.get_world_size() == 1:
-                    results = self._evaluate()
-                    logger.info(results)
-                else:
-                    result_queue = mp.Queue()
-                    rank = comm.get_rank()
-                    if rank == 0:
-                        mp.spawn(self._evaluate, args=(1, result_queue), nprocs=1)
-                    comm.synchronize()
-                    while not result_queue.empty():
-                        logger.info(result_queue.get())
+                results = self._evaluate()
+                logger.info(results)
             
 

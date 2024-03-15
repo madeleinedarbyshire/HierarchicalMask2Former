@@ -29,21 +29,17 @@ def build_transform_gen(cfg, is_train):
 
     augmentation = []
 
-    if cfg.INPUT.RANDOM_FLIP != "none":
-        augmentation.append(
-            T.RandomFlip(
+    augmentation.extend([
+        T.RandomFlip(
                 horizontal=cfg.INPUT.RANDOM_FLIP == "horizontal",
                 vertical=cfg.INPUT.RANDOM_FLIP == "vertical",
-            )
-        )
-
-    augmentation.extend([
+            ),
+        # T.RandomLighting(255),
+        T.RandomRotation([0, 90, 180, 270], sample_style="choice"),
         T.ResizeScale(
             min_scale=min_scale, max_scale=max_scale, target_height=image_size, target_width=image_size
         ),
         T.FixedSizeCrop(crop_size=(image_size, image_size)),
-        T.RandomLighting(255),
-        # T.RandomRotation([0, 359])
     ])
 
     return augmentation
@@ -82,11 +78,19 @@ class PhenoBenchDatasetMapper:
             image_format: an image format supported by :func:`detection_utils.read_image`.
         """
         self.tfm_gens = tfm_gens
-        logging.getLogger(__name__).info(
-            "[PhenoBenchDatasetMapper] Full TransformGens used in training: {}".format(
-                str(self.tfm_gens)
+
+        if is_train:
+            logging.getLogger(__name__).info(
+                "[PhenoBenchDatasetMapper] Full TransformGens used in training: {}".format(
+                    str(self.tfm_gens)
+                )
             )
-        )
+        else:
+            logging.getLogger(__name__).info(
+                "[PhenoBenchDatasetMapper] Full TransformGens used in evaluation: {}".format(
+                    str(self.tfm_gens)
+                )
+            )
 
         self.img_format = image_format
         self.is_train = is_train
@@ -109,26 +113,7 @@ class PhenoBenchDatasetMapper:
         while True:
             color = tuple(np.random.randint(0, 256, size=3))
             if color not in taken_colors:
-                return color
-
-    def apply_segmentation_transforms(self, transforms, gt):
-        color_map = {}
-        labels = np.unique(gt)                    
-        h, w = gt.shape[:2]
-        rgb_gt = np.zeros((h, w, 3))
-        for l in labels:
-            color = self.gen_color(color_map.values())
-            color_map[l] = color
-            ys, xs = np.where(gt == l)
-            rgb_gt[ys, xs] = color
-        rgb_gt = transforms.apply_segmentation(rgb_gt)
-        h,w = rgb_gt.shape[:2]
-        gt = np.zeros((h, w))
-        for i, color in color_map.items():
-            color_mask = np.all(rgb_gt == color, axis=-1)
-            gt[color_mask] = i
-        return gt
-                    
+                return color 
 
     def __call__(self, dataset_dict):
         """
@@ -138,6 +123,7 @@ class PhenoBenchDatasetMapper:
         Returns:
             dict: a format that builtin models in detectron2 accept
         """
+
         input_dict = {}
         image = np.array(dataset_dict['image'])
         if self.is_train:
@@ -149,7 +135,6 @@ class PhenoBenchDatasetMapper:
 
         if not self.is_test:
             for level in ["plant", "leaf"]:
-                classes = [0]
                 pan_seg_gt = dataset_dict[f"{level}_instances"]
                 sem_seg_gt = dataset_dict["semantics"]
 
@@ -159,7 +144,8 @@ class PhenoBenchDatasetMapper:
                         sem_seg_gt = transforms.apply_segmentation(sem_seg_gt)
                     pan_seg_gt = np.array(pan_seg_gt, dtype=np.uint8)
                     pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
-                    
+                
+                classes = [0]
                 masks = [pan_seg_gt == 0]
 
                 if level == "plant":

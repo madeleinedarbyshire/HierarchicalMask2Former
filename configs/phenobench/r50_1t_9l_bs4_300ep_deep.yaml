@@ -1,0 +1,5 @@
+_BASE_: r50_1t_9l_bs4_300ep.yaml
+MODEL:
+  MASK_FORMER:
+    DEEP_SUPERVISION: True
+OUTPUT_DIR: output/R50_1t_9l_bs4_300ep_deep
