@@ -52,6 +52,8 @@ def setup(args):
     # cfg.merge_from_list(args.opts)
     cfg.MODEL.WEIGHTS = args.weights
     cfg.SOLVER.IMS_PER_BATCH = args.batch_size
+    cfg.INPUT.MIN_SIZE_TEST = 1024
+    cfg.INPUT.MAX_SIZE_TEST = 1024
     cfg.freeze()
     default_setup(cfg, args)
     # Setup logger for "mask_former" module
@@ -64,19 +66,24 @@ data = PhenoBench("/workspace/PhenoBench", split="val", target_types=[], make_un
 model = build_model(cfg)
 model.eval()
 
+# print(cfg.INPUT.MIN_SIZE_TEST, cfg.INPUT.MAX_SIZE_TEST)
+
 print('Warm up...')
 warmup()
 
 print(f'Run inference with batch size: {args.batch_size}...')
 batch = []
 for i, image in enumerate(data):
+    # print('predictor')
+    # output = predictor(np.array(image["image"]))
     im = np.array(image["image"])
-    im = torch.as_tensor(np.ascontiguousarray(im.transpose(2, 0, 1)))
-    batch.append({'image': im})
+    im = im[:, :, ::-1]
+    im = torch.as_tensor(im.astype("float32").transpose(2, 0, 1))
+    # im = torch.as_tensor(np.ascontiguousarray(im.transpose(2, 0, 1)))
+    batch.append({'image': im, 'width': 1024, 'height': 1024})
     if (i + 1) % args.batch_size == 0:
         start_time = time.time()
-        with torch.no_grad():
-            outputs = model(batch)
+        outputs = model(batch)
         end_time = time.time()
         batch = []
         

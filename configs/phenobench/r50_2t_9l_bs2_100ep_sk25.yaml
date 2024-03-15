@@ -2,4 +2,9 @@ _BASE_: r50_2t_9l_bs2_100ep.yaml
 MODEL:
   MASK_FORMER:
     SKIPS: [2, 5]
+SOLVER:
+  IMS_PER_BATCH: 2
+  BASE_LR: 0.00001
+  STEPS: (58781, 68228)
+  MAX_ITER: 70350
 OUTPUT_DIR: output/R50_2t_9l_bs2_100ep_sk25

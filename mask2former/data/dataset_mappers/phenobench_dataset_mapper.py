@@ -71,6 +71,7 @@ class PhenoBenchDatasetMapper:
         *,
         tfm_gens,
         image_format,
+        image_size
     ):
         """
         NOTE: this interface is experimental.
@@ -91,6 +92,7 @@ class PhenoBenchDatasetMapper:
         self.img_format = image_format
         self.is_train = is_train
         self.is_test = is_test
+        self.image_size = image_size
 
     @classmethod
     def from_config(cls, cfg, is_train=True, is_test=False):
@@ -102,6 +104,7 @@ class PhenoBenchDatasetMapper:
             "is_train": is_train,
             "tfm_gens": tfm_gens,
             "image_format": cfg.INPUT.FORMAT,
+            "image_size": cfg.INPUT.IMAGE_SIZE
         }
         return ret
 
@@ -139,10 +142,19 @@ class PhenoBenchDatasetMapper:
             dict: a format that builtin models in detectron2 accept
         """
         input_dict = {}
-        image = np.array(dataset_dict['image'])
-        if self.is_train:
-            image, transforms = T.apply_transform_gens(self.tfm_gens, image)
-        
+        image = dataset_dict['image']
+
+        if self.image_size != 1024:
+            resized = image.resize((self.image_size, self.image_size), resample=0)
+            resized = np.array(resized)
+            input_dict["resized_image"] = torch.as_tensor(np.ascontiguousarray(resized.transpose(2, 0, 1)))
+        else:
+            resized = np.array(image)
+            input_dict["resized_image"] = torch.as_tensor(np.ascontiguousarray(resized.transpose(2, 0, 1)))
+
+        # if self.is_train:
+        #     image, transforms = T.apply_transform_gens(self.tfm_gens, image)
+        image = np.array(image)
         image_shape = image.shape[:2]
         input_dict["image"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
         input_dict["image_name"] = dataset_dict["image_name"]
@@ -150,15 +162,20 @@ class PhenoBenchDatasetMapper:
         if not self.is_test:
             for level in ["plant", "leaf"]:
                 classes = [0]
+
                 pan_seg_gt = dataset_dict[f"{level}_instances"]
                 sem_seg_gt = dataset_dict["semantics"]
+
+                # if self.image_size != 1024:
+                #     pan_seg_gt = np.resize(pan_seg_gt, (self.image_size, self.image_size))
+                #     sem_seg_gt = np.resize(sem_seg_gt, (self.image_size, self.image_size))
 
                 if self.is_train:
                     if level == "plant":
                         sem_seg_gt = np.array(sem_seg_gt, dtype=np.uint8)
-                        sem_seg_gt = transforms.apply_segmentation(sem_seg_gt)
+                        # sem_seg_gt = transforms.apply_segmentation(sem_seg_gt)
                     pan_seg_gt = np.array(pan_seg_gt, dtype=np.uint8)
-                    pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
+                    # pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
                     
                 masks = [pan_seg_gt == 0]
 

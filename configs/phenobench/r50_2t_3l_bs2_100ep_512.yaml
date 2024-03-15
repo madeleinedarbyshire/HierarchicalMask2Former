@@ -1,0 +1,6 @@
+_BASE_: r50_2t_3l_bs2_100ep_deep.yaml
+MODEL:
+  WEIGHTS: models/edited_r50_coco.pkl
+INPUT:
+  IMAGE_SIZE: 512
+OUTPUT_DIR: output/R50_2t_3l_bs2_100ep_512
