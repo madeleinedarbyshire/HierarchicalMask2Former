@@ -1,6 +1,0 @@
-_BASE_: r50_2t_9l_bs8_100ep.yaml
-MODEL:
-  MASK_FORMER:
-    DEEP_SUPERVISION: True
-    DEC_LAYERS: 4
-OUTPUT_DIR: output/R50_2t_3l_bs8_100ep_deep

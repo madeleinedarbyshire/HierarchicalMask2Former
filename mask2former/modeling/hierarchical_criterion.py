@@ -17,6 +17,14 @@ from detectron2.projects.point_rend.point_features import (
 
 from ..utils.misc import is_dist_avail_and_initialized, nested_tensor_from_tensor_list
 
+def boundary_loss(
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        num_masks: float,
+    ):
+    inputs = inputs.sigmoid()
+    loss = torch.einsum("pd,pd->pd", inputs, targets)
+    return loss.mean()
 
 def dice_loss(
         inputs: torch.Tensor,
@@ -49,6 +57,7 @@ def sigmoid_ce_loss(
         inputs: torch.Tensor,
         targets: torch.Tensor,
         num_masks: float,
+        focal: bool = True
     ):
     """
     Args:
@@ -60,15 +69,21 @@ def sigmoid_ce_loss(
     Returns:
         Loss tensor
     """
-    loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-
+    if focal:
+        alpha = 0.25
+        gamma = 2.0
+        BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+        pt = torch.exp(-BCE_loss)
+        alpha_t = targets * alpha + (1 - targets) * (1 - alpha)
+        loss = alpha_t * (1 - pt) ** gamma * BCE_loss
+    else:
+        loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
     return loss.mean(1).sum() / num_masks
 
 
 sigmoid_ce_loss_jit = torch.jit.script(
     sigmoid_ce_loss
-)  # type: torch.jit.ScriptModule
-
+)
 
 def calculate_uncertainty(logits):
     """
@@ -95,7 +110,7 @@ class SetCriterion(nn.Module):
     """
 
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses,
-                 num_points, oversample_ratio, importance_sample_ratio):
+                 num_points, oversample_ratio, importance_sample_ratio, use_focal_loss, use_boundary_loss):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -110,30 +125,27 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
-        # plant_empty_weights = torch.ones(self.num_classes + 1)
-        # plant_empty_weights[-1] = self.eos_coef
-        # leaf_empty_weights = torch.ones(self.num_classes)
-        # leaf_empty_weights[-1] = self.eos_coef
-        # self.register_buffer("plant_empty_weight", plant_empty_weights)
-        # self.register_buffer("leaf_empty_weight", plant_empty_weights)
 
         # pointwise mask loss parameters
         self.num_points = num_points
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
 
-    def loss_labels(self, outputs, targets, indices, level):
+        # loss options
+        self.boundary_loss = use_boundary_loss
+        self.focal_loss = use_focal_loss
+    
+    def get_weights(self):
+        return self.weight_dict
+
+    def update_weights(self, weight_dict):
+        self.weight_dict = weight_dict
+        print('Boundary Weight Updated: ', self.weight_dict)
+
+    def loss_labels(self, outputs, targets, indices, num_masks, level):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
-        num_masks = sum(len(t[f"{level}_labels"]) for t in targets)
-        num_masks = torch.as_tensor(
-            [num_masks], dtype=torch.float, device=next(iter(outputs.values())).device
-        )
-        if is_dist_avail_and_initialized():
-            torch.distributed.all_reduce(num_masks)
-        num_masks = torch.clamp(num_masks / get_world_size(), min=1).item()
-
         src_logits = outputs[f"{level}_pred_logits"].float()
 
         idx = self._get_src_permutation_idx(indices)
@@ -153,18 +165,10 @@ class SetCriterion(nn.Module):
         losses = {f"{level}_loss_ce": loss_ce}
         return losses
     
-    def loss_masks(self, outputs, targets, indices, level):
+    def loss_masks(self, outputs, targets, indices, num_masks, level):
         """Compute the losses related to the masks: the focal loss and the dice loss.
         targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
         """
-
-        num_masks = sum(len(t[f"{level}_masks"]) for t in targets)
-        num_masks = torch.as_tensor(
-            [num_masks], dtype=torch.float, device=next(iter(outputs.values())).device
-        )
-        if is_dist_avail_and_initialized():
-            torch.distributed.all_reduce(num_masks)
-        num_masks = torch.clamp(num_masks / get_world_size(), min=1).item()
 
         losses = {}
         src_idx = self._get_src_permutation_idx(indices)
@@ -172,15 +176,23 @@ class SetCriterion(nn.Module):
         src_masks = outputs[f"{level}_pred_masks"]
         src_masks = src_masks[src_idx]
         masks = [t[f"{level}_masks"] for t in targets]
+        dist_maps = [t[f"{level}_dist_maps"] for t in targets]
         # TODO use valid to mask invalid areas due to padding in loss
         target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
         target_masks = target_masks.to(src_masks)
         target_masks = target_masks[tgt_idx]
 
+        
+        dist_maps, valid = nested_tensor_from_tensor_list(dist_maps).decompose()
+        dist_maps = dist_maps[tgt_idx]
+
+        dist_maps = dist_maps.to(dtype=torch.float16)
+
         # No need to upsample predictions as we are using normalized coordinates :)
         # N x 1 x H x W
         src_masks = src_masks[:, None]
         target_masks = target_masks[:, None]
+        dist_maps = dist_maps[:, None]
 
         with torch.no_grad():
             # sample point_coords
@@ -196,6 +208,15 @@ class SetCriterion(nn.Module):
                 target_masks,
                 point_coords,
                 align_corners=False,
+                mode='nearest'
+            ).squeeze(1)
+
+            # get gt labels
+            point_boundaries = point_sample(
+                dist_maps,
+                point_coords,
+                align_corners=False,
+                mode='nearest'
             ).squeeze(1)
 
         point_logits = point_sample(
@@ -203,8 +224,12 @@ class SetCriterion(nn.Module):
             point_coords,
             align_corners=False,
         ).squeeze(1)
-        losses[f"{level}_loss_mask"] = sigmoid_ce_loss_jit(point_logits, point_labels, num_masks)
+        
+        if self.boundary_loss:
+            losses[f"{level}_loss_boundary"] = boundary_loss(point_logits, point_boundaries, num_masks)
+        losses[f"{level}_loss_mask"] = sigmoid_ce_loss_jit(point_logits, point_labels, num_masks, self.focal_loss)
         losses[f"{level}_loss_dice"] = dice_loss_jit(point_logits, point_labels, num_masks)
+        del dist_maps
         del src_masks
         del target_masks
         return losses
@@ -221,12 +246,26 @@ class SetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
+    def get_num_masks(self, level, outputs, targets):
+        num_masks = sum(len(t[f"{level}_masks"]) for t in targets)
+        num_masks = torch.as_tensor(
+            [num_masks], dtype=torch.float, device=next(iter(outputs.values())).device
+        )
+        if is_dist_avail_and_initialized():
+            torch.distributed.all_reduce(num_masks)
+        num_masks = torch.clamp(num_masks / get_world_size(), min=1).item()
+        return num_masks
+
     def get_loss(self, loss, outputs, targets):
+        plant_matcher = self.matcher(outputs, targets, "plant")
+        leaf_matcher = self.matcher(outputs, targets, "leaf")
+        plant_num_masks = self.get_num_masks("plant", outputs, targets)
+        leaf_num_masks = self.get_num_masks("leaf", outputs, targets)
         loss_map = {
-            "plant_labels": self.loss_labels(outputs, targets, self.matcher(outputs, targets, "plant"), "plant"),
-            "leaf_labels": self.loss_labels(outputs, targets, self.matcher(outputs, targets, "leaf"), "leaf"),
-            "plant_masks": self.loss_masks(outputs, targets, self.matcher(outputs, targets, "plant"), "plant"),
-            "leaf_masks": self.loss_masks(outputs, targets, self.matcher(outputs, targets, "leaf"), "leaf")
+            "plant_labels": self.loss_labels(outputs, targets, plant_matcher, plant_num_masks, "plant"),
+            "leaf_labels": self.loss_labels(outputs, targets, leaf_matcher, leaf_num_masks, "leaf"),
+            "plant_masks": self.loss_masks(outputs, targets, plant_matcher, plant_num_masks, "plant"),
+            "leaf_masks": self.loss_masks(outputs, targets, leaf_matcher, leaf_num_masks, "leaf")
         }
         return loss_map[loss]
 

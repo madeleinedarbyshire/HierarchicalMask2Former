@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import torch
 
+
 from detectron2.config import configurable
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
@@ -14,7 +15,6 @@ from detectron2.data.transforms import TransformGen
 from detectron2.structures import BitMasks, Boxes, Instances
 
 __all__ = ["PhenoBenchDatasetMapper"]
-
 
 def build_transform_gen(cfg, is_train):
     """
@@ -34,12 +34,7 @@ def build_transform_gen(cfg, is_train):
                 horizontal=cfg.INPUT.RANDOM_FLIP == "horizontal",
                 vertical=cfg.INPUT.RANDOM_FLIP == "vertical",
             ),
-        # T.RandomLighting(255),
         T.RandomRotation([0, 90, 180, 270], sample_style="choice"),
-        T.ResizeScale(
-            min_scale=min_scale, max_scale=max_scale, target_height=image_size, target_width=image_size
-        ),
-        T.FixedSizeCrop(crop_size=(image_size, image_size)),
     ])
 
     return augmentation
@@ -113,7 +108,15 @@ class PhenoBenchDatasetMapper:
         while True:
             color = tuple(np.random.randint(0, 256, size=3))
             if color not in taken_colors:
-                return color 
+                return color
+
+    def convert_to_signed(self, unsigned_matrix):
+        sign_bit_mask = np.uint16(1 << 15)
+        sign_bit_set = unsigned_matrix & sign_bit_mask != 0
+        signed_matrix = np.int16(unsigned_matrix)
+        signed_matrix[sign_bit_set] -= np.uint16(1 << 15)
+        signed_matrix[sign_bit_set] *= -1        
+        return signed_matrix
 
     def __call__(self, dataset_dict):
         """
@@ -126,38 +129,68 @@ class PhenoBenchDatasetMapper:
 
         input_dict = {}
         image = np.array(dataset_dict['image'])
+        image_shape = image.shape[:2]
+
         if self.is_train:
+            resize_aug = [T.Resize((int(1024 * dataset_dict['scale']), int(1024 * dataset_dict['scale'])), interp=0)]
+            image, resize_transforms = T.apply_transform_gens(resize_aug, image)
+            if image.shape[0] > 1024:
+                image = image[0:1024, 0:1024]
+            elif image.shape[0] < 1024:
+                p = int((1024 - image.shape[0]) / 2)
+                image = np.pad(image, [(p,p), (p,p), (0,0)], mode='constant', constant_values=128)
             image, transforms = T.apply_transform_gens(self.tfm_gens, image)
         
-        image_shape = image.shape[:2]
         input_dict["image"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
         input_dict["image_name"] = dataset_dict["image_name"]
 
         if not self.is_test:
             for level in ["plant", "leaf"]:
                 pan_seg_gt = dataset_dict[f"{level}_instances"]
-                sem_seg_gt = dataset_dict["semantics"]
+                sem_seg_gt = dataset_dict["semantics"]                
 
                 if self.is_train:
-                    if level == "plant":
-                        sem_seg_gt = np.array(sem_seg_gt, dtype=np.uint8)
-                        sem_seg_gt = transforms.apply_segmentation(sem_seg_gt)
-                    pan_seg_gt = np.array(pan_seg_gt, dtype=np.uint8)
+                    if dataset_dict["scale"] != 1:
+                        sem_seg_gt = sem_seg_gt.astype(np.float32)
+                        sem_seg_gt = resize_transforms.apply_segmentation(sem_seg_gt)
+                        sem_seg_gt = np.round(sem_seg_gt)
+                        pan_seg_gt = pan_seg_gt.astype(np.float32)    
+                        pan_seg_gt = resize_transforms.apply_segmentation(pan_seg_gt)
+                        pan_seg_gt = np.round(pan_seg_gt)
+
+                    if pan_seg_gt.shape[0] > 1024:
+                        sem_seg_gt = sem_seg_gt[0:1024, 0:1024]
+                        pan_seg_gt = pan_seg_gt[0:1024, 0:1024]
+                    elif pan_seg_gt.shape[0] < 1024:
+                        sem_seg_gt = np.pad(sem_seg_gt, [int((1024 - sem_seg_gt.shape[0]) / 2), int((1024 - sem_seg_gt.shape[1]) / 2)], mode='constant', constant_values=0)
+                        pan_seg_gt = np.pad(pan_seg_gt, [int((1024 - pan_seg_gt.shape[0]) / 2), int((1024 - pan_seg_gt.shape[1]) / 2)], mode='constant', constant_values=0)
+
+                    sem_seg_gt = transforms.apply_segmentation(sem_seg_gt)
+                    sem_seg_gt = sem_seg_gt.astype(np.int32)
+
                     pan_seg_gt = transforms.apply_segmentation(pan_seg_gt)
-                
-                classes = [0]
-                masks = [pan_seg_gt == 0]
+                    pan_seg_gt = pan_seg_gt.astype(np.int32)
+                    dist_maps = [transforms.apply_segmentation(self.convert_to_signed(np.array(d, dtype=np.uint16))) for d in dataset_dict[f"{level}_dist_maps"]]
 
+                classes = []
+                masks = []
                 if level == "plant":
+                    classes.append(0)
+                    masks.append(pan_seg_gt == 0)
                     for label in [1, 2]:
-                        for plant_id in np.unique(pan_seg_gt[sem_seg_gt == label]):
-                            classes.append(label)
-                            masks.append(pan_seg_gt == plant_id)
-                else:
-                    for leaf_id in np.unique(pan_seg_gt):
-                        classes.append(1)
-                        masks.append(pan_seg_gt == leaf_id)
+                        for plant_id in sorted(np.unique(pan_seg_gt[sem_seg_gt == label])):
+                            if plant_id != 0:
+                                classes.append(label)
+                                masks.append(pan_seg_gt == plant_id)
 
+                else:
+                    classes.append(0)
+                    masks.append(pan_seg_gt == 0)
+                    for leaf_id in sorted(np.unique(pan_seg_gt)):
+                        if leaf_id != 0:
+                            classes.append(1)
+                            masks.append(pan_seg_gt == leaf_id)
+                                
                 instances = Instances(image_shape)
                 classes = np.array(classes)
                 instances.gt_classes = torch.tensor(classes, dtype=torch.int64)
@@ -165,13 +198,17 @@ class PhenoBenchDatasetMapper:
                 if len(masks) == 0:
                     # Some images do not have any annotations (all ignored)
                     instances.gt_masks = torch.zeros((0, pan_seg_gt.shape[-2], pan_seg_gt.shape[-1]))
-                    instances.gt_boxes = Boxes(torch.zeros((0, 4)))
+
+                    if self.is_train:
+                        instances.dist_maps = torch.zeros((0, pan_seg_gt.shape[-2], pan_seg_gt.shape[-1]))
                 else:
                     masks = BitMasks(
                         torch.stack([torch.from_numpy(np.ascontiguousarray(x.copy())) for x in masks])
                     )
                     instances.gt_masks = masks.tensor
-                    instances.gt_boxes = masks.get_bounding_boxes()
+
+                    if self.is_train:
+                        instances.dist_maps = torch.stack([torch.from_numpy(np.ascontiguousarray(x)) for x in dist_maps])
 
                 input_dict[f"{level}_instances"] = instances
 

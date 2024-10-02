@@ -103,11 +103,14 @@ class MaskFormer(nn.Module):
         # Loss parameters:
         deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
         no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
+        use_focal = cfg.MODEL.MASK_FORMER.USE_FOCAL_LOSS
+        use_boundary = cfg.MODEL.MASK_FORMER.USE_BOUNDARY_LOSS
 
         # loss weights
         class_weight = cfg.MODEL.MASK_FORMER.CLASS_WEIGHT
         dice_weight = cfg.MODEL.MASK_FORMER.DICE_WEIGHT
         mask_weight = cfg.MODEL.MASK_FORMER.MASK_WEIGHT
+        boundary_weight = cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT
 
         # building criterion
         matcher = HungarianMatcher(
@@ -117,7 +120,18 @@ class MaskFormer(nn.Module):
             num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
         )
 
-        weight_dict = {"plant_loss_ce": class_weight / 2, "leaf_loss_ce": class_weight / 2, "plant_loss_mask": mask_weight / 2, "plant_loss_dice": dice_weight / 2, "leaf_loss_mask": mask_weight / 2, "leaf_loss_dice": dice_weight / 2}
+        print('boundary weight',  boundary_weight)
+
+        weight_dict = {"plant_loss_ce": class_weight / 2, 
+                       "leaf_loss_ce": class_weight / 2, 
+                       "plant_loss_mask": mask_weight / 2, 
+                       "plant_loss_dice": dice_weight / 2,
+                       "leaf_loss_mask": mask_weight / 2, 
+                       "leaf_loss_dice": dice_weight / 2}
+
+        if use_boundary:
+            weight_dict["plant_loss_boundary"] = boundary_weight
+            weight_dict["leaf_loss_boundary"] = boundary_weight
 
         if deep_supervision:
             dec_layers = cfg.MODEL.MASK_FORMER.DEC_LAYERS
@@ -137,6 +151,8 @@ class MaskFormer(nn.Module):
             num_points=cfg.MODEL.MASK_FORMER.TRAIN_NUM_POINTS,
             oversample_ratio=cfg.MODEL.MASK_FORMER.OVERSAMPLE_RATIO,
             importance_sample_ratio=cfg.MODEL.MASK_FORMER.IMPORTANCE_SAMPLE_RATIO,
+            use_focal_loss=use_focal,
+            use_boundary_loss=use_boundary
         )
 
         return {
@@ -159,12 +175,19 @@ class MaskFormer(nn.Module):
             "semantic_on": cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON,
             "instance_on": cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON,
             "panoptic_on": cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON,
-            "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE,
+            "test_topk_per_image": cfg.TEST.DETECTIONS_PER_IMAGE
         }
 
     @property
     def device(self):
         return self.pixel_mean.device
+
+    def update_weights(self):
+        weight_dict = self.criterion.get_weights()
+        for key in weight_dict:
+            if 'loss_boundary' in key:
+                weight_dict[key] = weight_dict[key] + 0.0006
+        self.criterion.update_weights(weight_dict)
 
     def forward(self, batched_inputs):
         """
@@ -198,19 +221,9 @@ class MaskFormer(nn.Module):
 
         batch_size = len(images)
 
-        times = []
-
-        t1 = time.time()
-
         features = self.backbone(images.tensor)
 
-        t2 = time.time()
-        times.append((t2 - t1) / batch_size)
-
         outputs = self.sem_seg_head(features)
-
-        t3 = time.time()
-        times.append((t3 - t2) / batch_size)
 
         if self.training:
             # mask classification target
@@ -281,14 +294,6 @@ class MaskFormer(nn.Module):
                         instance_r = retry_if_cuda_oom(self.instance_inference)(mask_cls_result, mask_pred_result)
                         processed_results[-1][f"{level}_instances"] = instance_r
 
-            t4 = time.time()
-            times.append((t4 - t3) / batch_size)
-
-            with open("inference_speeds.csv", mode="a", newline="") as file:
-                writer = csv.writer(file)
-                writer.writerow(times)
-
-
             return processed_results
 
     def prepare_targets(self, targets, images):
@@ -296,7 +301,9 @@ class MaskFormer(nn.Module):
         new_targets = []
         for targets_per_image in targets:
             new_target = {"plant_labels": targets_per_image["plant_instances"].to(self.device).gt_classes,
-                          "leaf_labels": targets_per_image["leaf_instances"].to(self.device).gt_classes}
+                          "leaf_labels": targets_per_image["leaf_instances"].to(self.device).gt_classes,
+                          "plant_dist_maps": targets_per_image["plant_instances"].to(self.device).dist_maps,
+                          "leaf_dist_maps": targets_per_image["leaf_instances"].to(self.device).dist_maps}
             for level in ["plant", "leaf"]:
                 gt_masks = targets_per_image[f"{level}_instances"].to(self.device).gt_masks
                 padded_masks = torch.zeros((gt_masks.shape[0], h_pad, w_pad), dtype=gt_masks.dtype, device=gt_masks.device)
@@ -370,6 +377,10 @@ class MaskFormer(nn.Module):
                             "category_id": int(pred_class),
                         }
                     )
+            
+            for s in segments_info:
+                if s['category_id'] == 0:
+                    panoptic_seg[panoptic_seg == s['id']] = 0
 
             return panoptic_seg, segments_info
 
@@ -401,11 +412,12 @@ class MaskFormer(nn.Module):
         result = Instances(image_size)
         # mask (before sigmoid)
         result.pred_masks = (mask_pred > 0).float()
+
+        # Fast bbox creation
         # result.pred_boxes = Boxes(torch.zeros(mask_pred.size(0), 4))
-        # print('pred bboxes', result.pred_boxes)
-        # Uncomment the following to get boxes from masks (this is slow)
+
+        # Slow bbox creation
         result.pred_boxes = BitMasks(mask_pred > 0).get_bounding_boxes()
-        # print('pred bboxes', result.pred_boxes)
 
         # calculate average mask prob
         mask_scores_per_image = (mask_pred.sigmoid().flatten(1) * result.pred_masks.flatten(1)).sum(1) / (result.pred_masks.flatten(1).sum(1) + 1e-6)

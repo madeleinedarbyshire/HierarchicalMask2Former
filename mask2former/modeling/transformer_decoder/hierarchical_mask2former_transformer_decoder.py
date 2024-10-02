@@ -238,7 +238,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         dec_layers: int,
         pre_norm: bool,
         mask_dim: int,
-        skipped_layers: [int],
         level: str
     ):
         """
@@ -256,7 +255,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         super().__init__()
 
         self.num_feature_levels = 3
-        self.skipped_layers = skipped_layers
         self.level = level
         
         # define Transformer decoder here
@@ -330,9 +328,6 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
             
             # FFN
             output = self.transformer_ffn_layers[i](output)
-            # if i in self.skipped_layers:
-            #     new_skips[i] = output
-
             outputs_class, outputs_mask, attn_mask = self.forward_prediction_heads(output, mask_features, attn_mask_target_size=size_list[(i + 1) % self.num_feature_levels])
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
@@ -413,7 +408,6 @@ class HierarchicalDecoder(nn.Module):
         pre_norm: bool,
         mask_dim: int,
         enforce_input_project: bool,
-        skipped_layers: [int]
     ):
         """
         NOTE: this interface is experimental.
@@ -458,8 +452,8 @@ class HierarchicalDecoder(nn.Module):
             else:
                 self.input_proj.append(nn.Sequential())
 
-        self.plant_decoder = MultiScaleMaskedTransformerDecoder(num_classes, hidden_dim, nheads, dim_feedforward, dec_layers, pre_norm, mask_dim, skipped_layers, "plant")
-        self.leaf_decoder = MultiScaleMaskedTransformerDecoder(2, hidden_dim, nheads, dim_feedforward, dec_layers, pre_norm, mask_dim, skipped_layers, "leaf")
+        self.plant_decoder = MultiScaleMaskedTransformerDecoder(num_classes, hidden_dim, nheads, dim_feedforward, dec_layers, pre_norm, mask_dim, "plant")
+        self.leaf_decoder = MultiScaleMaskedTransformerDecoder(2, hidden_dim, nheads, dim_feedforward, dec_layers, pre_norm, mask_dim, "leaf")
 
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
@@ -485,7 +479,6 @@ class HierarchicalDecoder(nn.Module):
         ret["enforce_input_project"] = cfg.MODEL.MASK_FORMER.ENFORCE_INPUT_PROJ
 
         ret["mask_dim"] = cfg.MODEL.SEM_SEG_HEAD.MASK_DIM
-        ret["skipped_layers"] = cfg.MODEL.MASK_FORMER.SKIPS
 
         return ret
 
@@ -513,8 +506,6 @@ class HierarchicalDecoder(nn.Module):
         # QxNxC
         query_embed = self.query_embed.weight.unsqueeze(1).repeat(1, bs, 1)
         output = self.query_feat.weight.unsqueeze(1).repeat(1, bs, 1)
-
-        # skips = [torch.zeros_like(output) for _ in range(self.num_layers)]
 
         plant_output = self.plant_decoder.forward(output, mask_features, size_list, src, pos, query_embed)
         leaf_output = self.leaf_decoder.forward(output, mask_features, size_list, src, pos, query_embed)

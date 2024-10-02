@@ -117,3 +117,10 @@ def add_maskformer2_config(cfg):
     cfg.TEST.NO_EVAL = False
     cfg.MODEL.MASK_FORMER.SKIPS = []
     cfg.DATASETS.TEST_NO_EVAL = ("phenobench_test",)
+    cfg.MODEL.MASK_FORMER.BOUNDARY_WEIGHT = 0.01
+    cfg.MODEL.MASK_FORMER.USE_FOCAL_LOSS = True
+    cfg.MODEL.MASK_FORMER.USE_BOUNDARY_LOSS = True
+    cfg.RESIZE_AUG = False
+
+
+

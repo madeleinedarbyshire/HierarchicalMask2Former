@@ -31,8 +31,10 @@ from detectron2.config import get_cfg
 from detectron2.data import MetadataCatalog, DatasetCatalog, build_detection_train_loader, build_detection_test_loader
 from detectron2.engine import (
     DefaultTrainer,
+    HookBase,
     default_argument_parser,
     default_setup,
+    hooks,
     launch,
 )
 from detectron2.evaluation import verify_results
@@ -52,20 +54,27 @@ from mask2former import (
 
 from register_phenobench import register_phenobench
 
-meta = {"thing_dataset_id_to_contiguous_id": {1:1, 2:2},
-        "stuff_dataset_id_to_contiguous_id": {0:0},
-        "thing_classes": ['crop', 'weed'],
-        "thing_colors": [(66, 135, 245), (245, 66, 66)], 
-        "stuff_classes": ['soil']}
 
-register_phenobench("phenobench_train", meta, "/workspace/PhenoBench", split="train")
-register_phenobench("phenobench_val", meta, "/workspace/PhenoBench", split="val")
-register_phenobench("phenobench_test", meta, "/workspace/PhenoBench", split="test")
+class WeightUpdateHook(HookBase):
+    def __init__(self, trainer, n_iterations):
+        super().__init__()
+        self.trainer = trainer
+        self.n_iterations = n_iterations
+
+    def after_step(self):
+        if self.trainer.iter % self.n_iterations == 0:
+            self.trainer.model.update_weights()
 
 class Trainer(DefaultTrainer):
     """
     Extension of the Trainer class adapted to MaskFormer.
     """
+    def build_hooks(cls):
+        hooks = super().build_hooks()
+        hooks.insert(-1, WeightUpdateHook(cls, n_iterations=448))  # Insert WeightUpdateHook before the last hook
+        return hooks
+
+
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         """
@@ -93,7 +102,7 @@ class Trainer(DefaultTrainer):
     def build_train_loader(cls, cfg):
         mapper = PhenoBenchDatasetMapper(cfg, True)
         dataset = DatasetCatalog.get(cfg.DATASETS.TRAIN[0])
-        return build_detection_train_loader(cfg, dataset=dataset, mapper=mapper, aspect_ratio_grouping=False)
+        return build_detection_train_loader(dataset=dataset, mapper=mapper, aspect_ratio_grouping=False, num_workers=cfg.DATALOADER.NUM_WORKERS, total_batch_size=cfg.SOLVER.IMS_PER_BATCH)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
@@ -201,6 +210,11 @@ class Trainer(DefaultTrainer):
             optimizer = maybe_add_gradient_clipping(cfg, optimizer)
         return optimizer
 
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def setup(args):
     """
@@ -221,6 +235,19 @@ def setup(args):
 
 def main(args):
     cfg = setup(args)
+    meta = {"thing_dataset_id_to_contiguous_id": {1:1, 2:2},
+        "stuff_dataset_id_to_contiguous_id": {0:0},
+        "thing_classes": ['crop', 'weed'],
+        "thing_colors": [(66, 135, 245), (245, 66, 66)], 
+        "stuff_classes": ['soil']}
+
+    # register_phenobench("phenobench_train_extra", meta, "/nvmedrive/PhenoBenchExtra", split="train", resize_aug=cfg.RESIZE_AUG)
+    # register_phenobench("phenobench_val_extra", meta, "/nvmedrive/PhenoBenchExtra", split="val", resize_aug=cfg.RESIZE_AUG)
+
+    register_phenobench("phenobench_train", meta, "/nvmedrive/PhenoBenchExtra", split="train", resize_aug=cfg.RESIZE_AUG)
+    register_phenobench("phenobench_val", meta, "/nvmedrive/PhenoBenchExtra", split="val", resize_aug=cfg.RESIZE_AUG)
+    register_phenobench("phenobench_test", meta, "/nvmedrive/PhenoBench", split="test", resize_aug=cfg.RESIZE_AUG)
+    set_seed(cfg.SEED)
 
     if args.eval_only:
         model = Trainer.build_model(cfg)

@@ -1,0 +1,7 @@
+_BASE_: swinl21k_2t_9l_bs4_300ep.yaml
+SEED: 42
+MODEL:
+  MASK_FORMER:
+    DEEP_SUPERVISION: True
+    DEC_LAYERS: 4
+OUTPUT_DIR: output/SwinLin21k_2t_3l_bs4_300ep_deep_42seed
